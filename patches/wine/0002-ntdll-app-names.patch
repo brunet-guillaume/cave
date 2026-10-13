@@ -1,0 +1,64 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -542,6 +542,40 @@
+ 
+ /* CW HACK 22144 */
+ #ifdef __APPLE__
++/* cave: name chosen by cave for the program exe_path (a Windows path),
++ * from CAVE_APP_NAMES: lines of "prefix<TAB>name", compared
++ * case-insensitively; the longest prefix wins. cave fills it with the .exe
++ * of each application and the folder of each Steam game; programs
++ * launched afterwards (a game launched by Steam) inherit the variable.
++ * The name becomes a file name: any "/" in it is replaced. */
++static char *cave_app_name(const char *exe_path)
++{
++    const char *line, *tab, *end, *names = getenv("CAVE_APP_NAMES");
++    size_t len, best = 0, i;
++    char *ret = NULL, *p;
++
++    for (line = names; line && *line; line = *end ? end + 1 : end)
++    {
++        if (!(end = strchr(line, '\n'))) end = line + strlen(line);
++        if (!(tab = memchr(line, '\t', end - line)) || tab == line || tab + 1 == end) continue;
++        len = tab - line;
++        if (len <= best || strlen(exe_path) < len) continue;
++        for (i = 0; i < len; i++)
++        {
++            char a = exe_path[i], b = line[i];
++            if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
++            if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
++            if (a != b) break;
++        }
++        if (i < len) continue;
++        free(ret);
++        ret = strndup(tab + 1, end - tab - 1);
++        best = len;
++    }
++    for (p = ret; p && *p; p++) if (*p == '/') *p = '-';
++    return ret;
++}
++
+ /* This is the same "exe path to display name" algorithm used in
+  * loader/main.c to determine the name used for the application menu (CW hack 13438).
+  *
+@@ -553,6 +587,8 @@
+     char *exe_name, *exe_path_copy, *p, *ret;
+     size_t exe_name_len;
+ 
++    if ((ret = cave_app_name(exe_path))) return ret;
++
+     exe_path_copy = strdup(exe_path);
+     exe_name = exe_path_copy;
+ 
+@@ -566,8 +602,10 @@
+     else
+         exe_name_len = strlen(exe_name);
+ 
++    /* cave: the name without its extension ("WinRAR", not "WinRAR.exe"),
++     * as the computation of exe_name_len intends. */
+     if (exe_name_len)
+-        ret = strdup(exe_name);
++        ret = strndup(exe_name, exe_name_len);
+     else
+         ret = NULL;
+ 

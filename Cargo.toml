@@ -1,0 +1,19 @@
+[package]
+name = "cave"
+version = "0.1.0"
+edition = "2021"
+description = "Wine bottle manager for macOS (learning project)"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+directories = "5"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+chrono = "0.4"
+
+# The graphical interface (ui/) is a workspace member. At the root, cargo
+# only builds the root package: the CLI stays quick to compile.
+[workspace]
+members = ["ui"]

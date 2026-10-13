@@ -1,0 +1,22 @@
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -405,6 +405,19 @@
+ 
+     for (i = 0; i < count; i++) dll_path_maxlen = max( dll_path_maxlen, strlen(dll_paths[i]) );
+     dll_paths[count] = NULL;
++
++    /* cave: like cxcompatdb with prepend_dll_path (CW Hack 24067), but
++     * driven by the environment. The folders in WINEDLLPATH_PREPEND come
++     * before Wine's DLLs: this is how a bottle chooses DXMT. */
++    if ((path = getenv( "WINEDLLPATH_PREPEND" )))
++    {
++        char *dirs[16];
++        int n = 0;
++
++        path = strdup( path ); /* never freed: dll_paths points into it */
++        for (p = strtok( path, ":" ); p && n < 16; p = strtok( NULL, ":" )) dirs[n++] = p;
++        while (n--) prepend_dll_path( dirs[n] ); /* the first one listed ends up first */
++    }
+ }
+ 
+ 

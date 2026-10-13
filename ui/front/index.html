@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cave</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="app-header" data-tauri-drag-region>
+<h1 class="app-title" data-tauri-drag-region>Cave</h1>
+<div class="header-actions">
+<label class="search">
+<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.75" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 10l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+<input id="search" type="search" placeholder="Rechercher" aria-label="Rechercher un jeu ou une application" data-en-placeholder="Search" data-en-aria-label="Search for a game or an application" autocomplete="off" spellcheck="false">
+</label>
+<button id="install-steam" class="button" hidden data-en="Install Steam">Installer Steam</button>
+<button id="install-app" class="button button--primary" data-en="Install an Application…">Installer une application…</button>
+<button id="refresh" class="button button--icon" title="Actualiser" aria-label="Actualiser" data-en-title="Refresh" data-en-aria-label="Refresh">↻</button>
+</div>
+</header>
+<main class="library">
+<section id="setup" class="setup" hidden>
+<div class="setup-text">
+<h2 class="setup-title" data-en="Cave needs its runtime">Cave a besoin de son runtime</h2>
+<p data-en-html="It is Cave's Windows: Wine and its graphics layers, about 270 MB. Download &lt;strong&gt;wine-cx-….tar.xz&lt;/strong&gt; from &lt;a href=&quot;#&quot; data-link=&quot;releases&quot;&gt;Cave's releases page&lt;/a&gt;, then drop it on this window or choose it.">C'est le Windows de Cave : Wine et ses couches graphiques, environ 270 Mo. Télécharge <strong>wine-cx-….tar.xz</strong> sur la <a href="#" data-link="releases">page des versions de Cave</a>, puis dépose-le sur cette fenêtre ou choisis-le.</p>
+</div>
+<button id="choose-runtime" class="button button--primary" data-en="Choose File…">Choisir le fichier…</button>
+</section>
+<section class="library-section" aria-labelledby="games-title">
+<h2 id="games-title" class="section-title" data-en="Games">Jeux</h2>
+<div id="games" class="tile-grid tile-grid--games"></div>
+</section>
+<section class="library-section" aria-labelledby="apps-title">
+<h2 id="apps-title" class="section-title">Applications</h2>
+<div id="apps" class="tile-grid tile-grid--apps"></div>
+</section>
+</main>
+<footer class="app-footer">
+<p data-en-html="Cave is a personal, free and non-commercial project, not affiliated with CodeWeavers. It relies on Wine and on the &lt;a href=&quot;#&quot; data-link=&quot;sources&quot;&gt;CrossOver sources&lt;/a&gt; published by CodeWeavers, who fund a large part of Wine's development: &lt;a href=&quot;#&quot; data-link=&quot;crossover&quot;&gt;support their work with CrossOver&lt;/a&gt;. Free software under the GPL 3.0 license, without any warranty.">Cave est un projet personnel, gratuit et non commercial, non affilié à CodeWeavers. Il s'appuie sur Wine et sur les <a href="#" data-link="sources">sources de CrossOver</a> publiées par CodeWeavers, qui financent une grande partie du développement de Wine : <a href="#" data-link="crossover">soutenez leur travail avec CrossOver</a>. Logiciel libre sous licence GPL 3.0, fourni sans garantie.</p>
+</footer>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<div id="menu" class="menu" role="menu" hidden></div>
+<div class="drop-overlay" aria-hidden="true"><p class="drop-label"></p></div>
+<dialog id="confirm" class="dialog">
+<form method="dialog">
+<h3 class="dialog-title"></h3>
+<p class="dialog-message"></p>
+<ul class="dialog-list"></ul>
+<p class="dialog-note"></p>
+<div class="dialog-actions">
+<button value="cancel" class="button cancel" autofocus data-en="Cancel">Annuler</button>
+<button value="ok" class="button button--primary ok"></button>
+</div>
+</form>
+</dialog>
+<dialog id="components" class="dialog">
+<form method="dialog">
+<h3 class="dialog-title"></h3>
+<p class="dialog-message" data-en="Microsoft libraries that many applications need. They are downloaded from Microsoft and installed in the bottle.">Des bibliothèques de Microsoft dont beaucoup d'applications ont besoin. Elles se téléchargent chez Microsoft et s'installent dans la bouteille.</p>
+<ul class="component-list"></ul>
+<p class="dialog-note"></p>
+<div class="dialog-actions">
+<button value="cancel" class="button cancel" formnovalidate data-en="Cancel">Annuler</button>
+<button value="ok" class="button button--primary ok" data-en="Install">Installer</button>
+</div>
+</form>
+</dialog>
+<dialog id="rename" class="dialog">
+<form method="dialog">
+<h3 class="dialog-title"></h3>
+<p class="dialog-message" data-en="It shows under the name of its applications when two share the same name. Letters, digits, - and _ only.">Il apparaît sous le nom de ses applications quand deux portent le même. Lettres, chiffres, - et _ uniquement.</p>
+<input class="dialog-input" name="name" required pattern="[A-Za-z0-9_\-]+" maxlength="40" autocomplete="off" spellcheck="false" aria-label="Nouveau nom" data-en-aria-label="New name">
+<p class="dialog-note"></p>
+<div class="dialog-actions">
+<button value="cancel" class="button cancel" formnovalidate data-en="Cancel">Annuler</button>
+<button value="ok" class="button button--primary" data-en="Rename">Renommer</button>
+</div>
+</form>
+</dialog>
+<template id="game-tile">
+<article class="tile tile--game">
+<div class="tile-art" aria-hidden="true"><span class="tile-fallback"></span><img alt=""></div>
+<p class="tile-name"></p>
+<p class="tile-meta"><span class="tile-sub"></span></p>
+<div class="tile-actions">
+<button class="button button--primary tile-launch" data-en="Play">Jouer</button>
+<button class="button tile-more" aria-label="Options" aria-haspopup="menu">⋯</button>
+</div>
+</article>
+</template>
+<template id="app-tile">
+<article class="tile tile--app">
+<div class="tile-art" aria-hidden="true"><span class="tile-fallback"></span><img alt=""></div>
+<p class="tile-name"></p>
+<p class="tile-meta"><span class="tile-sub"></span></p>
+<div class="tile-actions">
+<button class="button button--primary tile-launch" data-en="Open">Ouvrir</button>
+<button class="button tile-more" aria-label="Options" aria-haspopup="menu">⋯</button>
+</div>
+</article>
+</template>
+<template id="pending-tile">
+<article class="tile tile--app is-pending" aria-busy="true">
+<div class="tile-art" aria-hidden="true"><span class="tile-spinner"></span></div>
+<p class="tile-name"></p>
+<p class="tile-step" role="status"></p>
+<p class="tile-hint" data-en="This may take a few minutes.">Cela peut prendre quelques minutes.</p>
+</article>
+</template>
+<script src="app.js"></script>
+</body>
+</html>
