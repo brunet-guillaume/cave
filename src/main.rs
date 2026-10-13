@@ -166,7 +166,8 @@ enum RuntimeCmd {
         version: String,
     },
     /// Adds D3DMetal (Direct3D 11/12 → Metal) to a runtime, from the .dmg of
-    /// the Game Porting Toolkit downloaded from Apple
+    /// the Game Porting Toolkit downloaded from Apple (or a .tar.xz of a
+    /// runtime's lib/apple_gptk folder)
     AddD3dmetal { runtime: String, dmg: PathBuf },
 }
 

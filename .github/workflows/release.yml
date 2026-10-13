@@ -1,0 +1,147 @@
+# Builds Cave's runtime (Wine from the CrossOver sources, DXMT, D3DMetal,
+# GStreamer, winetricks) and Cave.app. On a v* tag, both go into a draft
+# Release: check its notes on GitHub, then publish it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Run by hand (Actions tab): builds everything without releasing.
+  workflow_dispatch:
+
+permissions:
+  contents: write # read the D3DMetal draft release, create the new draft
+
+env:
+  CROSSOVER_VERSION: "26.3.0"
+  # Gcenx's Wine build, whose x86_64 libraries (gnutls, freetype, SDL2,
+  # MoltenVK…) go into the runtime.
+  WINE_DEVEL_VERSION: "11.18"
+  WINE_DEVEL_SHA256: aa0ea4c82e636ae7bca2076387cb0a5affa26509ad13f119ecd0d62bd7ba6f82
+  # Draft release holding Apple's Game Porting Toolkit redist (D3DMetal): a
+  # workflow cannot download it from Apple, which requires an account.
+  D3DMETAL_RELEASE: d3dmetal-gptk-3.0
+  TAURI_CLI_VERSION: "2.12.2"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+jobs:
+  runtime:
+    # arm64, like the Macs Cave runs on: Wine's x86_64 side is built under
+    # Rosetta, as on a developer's Mac.
+    runs-on: macos-26
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build tools
+        run: brew install bison mingw-w64 sdl2 freetype gnutls pkgconf
+
+      - name: Wine Devel.app
+        run: |
+          archive=$RUNNER_TEMP/wine-devel.tar.xz
+          curl -fsSL -o "$archive" \
+            "https://github.com/Gcenx/macOS_Wine_builds/releases/download/$WINE_DEVEL_VERSION/wine-devel-$WINE_DEVEL_VERSION-osx64.tar.xz"
+          echo "$WINE_DEVEL_SHA256  $archive" | shasum -a 256 -c
+          tar -xJf "$archive" -C /Applications
+          rm "$archive"
+
+      - name: Wine
+        run: scripts/build-wine.sh "$CROSSOVER_VERSION"
+
+      - name: DXMT
+        run: scripts/add-dxmt.sh "wine-cx-$CROSSOVER_VERSION"
+
+      - name: D3DMetal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$D3DMETAL_RELEASE" -D "$RUNNER_TEMP" -p "$D3DMETAL_RELEASE.tar.xz"
+          scripts/add-d3dmetal.sh "$RUNNER_TEMP/$D3DMETAL_RELEASE.tar.xz" "wine-cx-$CROSSOVER_VERSION"
+
+      - name: Archive
+        run: scripts/package-runtime.sh "wine-cx-$CROSSOVER_VERSION" "$RUNNER_TEMP/out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime
+          path: ${{ runner.temp }}/out/
+          compression-level: 0 # already xz
+          retention-days: 7
+
+  app:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^  "version": "\(.*\)",$/\1/p' ui/tauri.conf.json)
+          [[ "v$version" == "$GITHUB_REF_NAME" ]] ||
+            { echo "::error::tag $GITHUB_REF_NAME but ui/tauri.conf.json says $version"; exit 1; }
+
+      - name: Rust target of the Steam shim
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Cave.app
+        run: npx --yes "@tauri-apps/cli@$TAURI_CLI_VERSION" build
+
+      - name: Archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          ditto -c -k --keepParent target/release/bundle/macos/Cave.app "$RUNNER_TEMP/out/Cave.zip"
+          cd "$RUNNER_TEMP/out"
+          shasum -a 256 Cave.zip > Cave.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app
+          path: ${{ runner.temp }}/out/
+          retention-days: 7
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [runtime, app]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runtime=wine-cx-$CROSSOVER_VERSION.tar.xz
+          {
+            echo "## Download"
+            echo
+            echo "- **Cave.zip**: the app."
+            echo "- **$runtime**: the runtime, Wine built from the CrossOver $CROSSOVER_VERSION sources, with D3DMetal, DXMT, GStreamer, Wine Mono, Wine Gecko and winetricks."
+            echo
+            echo "## Install"
+            echo
+            echo "1. Install Rosetta 2, which runs Wine: \`softwareupdate --install-rosetta --agree-to-license\`."
+            echo "2. Unzip \`Cave.zip\` and move **Cave.app** to your Applications folder."
+            echo "3. Open Cave. It is not signed by Apple: allow it in **System Settings → Privacy & Security → Open Anyway**."
+            echo "4. Drop \`$runtime\` onto Cave's window, or click **Choose File…**."
+            echo
+            echo "## What's new"
+            echo
+            echo "_To be written before publishing._"
+            echo
+            echo "## Checksums (SHA-256)"
+            echo
+            echo '```'
+            cat out/*.sha256
+            echo '```'
+            echo
+            echo "Cave is a personal, non-commercial project, not affiliated with CodeWeavers. The runtime's legal notices are in its \`NOTICES\` folder; D3DMetal is redistributed for non-commercial use only, under Apple's license."
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "Cave ${GITHUB_REF_NAME#v}" --notes-file notes.md out/*
