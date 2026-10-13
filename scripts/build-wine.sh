@@ -39,13 +39,30 @@ DEST="$RUNTIMES/wine-cx-$VERSION"
 
 step() { printf '\n==> %s\n' "$*"; }
 
+# Downloads into <file>.part, then renames: an interrupted download never
+# passes for a finished one. CodeWeavers' server sometimes cuts connections
+# after a minute or two (from GitHub's machines): the download resumes where
+# it stopped, as long as each attempt brings something new.
+fetch() { # <url> <file>
+    [[ -f $2 ]] && return 0
+    local size=-1 now stalls=0
+    until curl -fL -C - -o "$2.part" "$1"; do
+        now=$(stat -f %z "$2.part" 2>/dev/null || echo 0)
+        if ((now > size)); then stalls=0; else stalls=$((stalls + 1)); fi
+        ((stalls < 3)) || return 1
+        size=$now
+        echo "download interrupted at $now bytes, resuming: $1" >&2
+        sleep 3
+    done
+    mv "$2.part" "$2"
+}
+
 # -- Sources -----------------------------------------------------------------
 if [[ ! -d $SRC ]]; then
     step "Downloading the CrossOver $VERSION sources"
     mkdir -p "$WORK/dl" "$WORK/src/crossover-$VERSION"
     tarball=$WORK/dl/crossover-sources-$VERSION.tar.gz
-    [[ -f $tarball ]] || curl -fL -o "$tarball" \
-        "https://media.codeweavers.com/pub/crossover/source/crossover-sources-$VERSION.tar.gz"
+    fetch "https://media.codeweavers.com/pub/crossover/source/crossover-sources-$VERSION.tar.gz" "$tarball"
     tar -xzf "$tarball" -C "$WORK/src/crossover-$VERSION"
 fi
 
@@ -75,8 +92,8 @@ mkdir -p "$DEPS/no-pkgconfig"
 # from libinotify-kqueue (not in Homebrew).
 if [[ ! -f $DEPS/include/sys/inotify.h ]]; then
     mkdir -p "$DEPS/include/sys"
-    curl -fL -o "$DEPS/include/sys/inotify.h" \
-        https://raw.githubusercontent.com/libinotify-kqueue/libinotify-kqueue/master/sys/inotify.h
+    fetch https://raw.githubusercontent.com/libinotify-kqueue/libinotify-kqueue/master/sys/inotify.h \
+        "$DEPS/include/sys/inotify.h"
 fi
 # configure derives the name to load (dlopen) from each library's install
 # name, cutting after the last "/". Gcenx reduced them to "libgnutls.dylib"
@@ -101,9 +118,9 @@ if [[ ! -f $GST/lib/pkgconfig/gstreamer-1.0.pc ]]; then
     for kind in "" devel-; do
         pkg=gstreamer-1.0-$kind$GST_VERSION-universal.pkg
         url=https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION/$pkg
-        [[ -f $WORK/dl/$pkg ]] || curl -fL -o "$WORK/dl/$pkg" "$url"
+        fetch "$url" "$WORK/dl/$pkg"
         # Unsigned packages: at least check the published checksum.
-        sum=$(curl -fsL "$url.sha256sum" | awk '{print $1}')
+        sum=$(curl -fsL --retry 5 "$url.sha256sum" | awk '{print $1}')
         [[ $(shasum -a 256 "$WORK/dl/$pkg" | awk '{print $1}') == "$sum" ]] ||
             { echo "wrong SHA-256 checksum: $pkg" >&2; exit 1; }
         rm -rf "$tmp"
@@ -226,7 +243,7 @@ mono=$(sed -n 's/^#define WINE_MONO_VERSION "\(.*\)"/\1/p' "$SRC/dlls/mscoree/ms
 gecko=$(sed -n 's/^#define GECKO_VERSION "\(.*\)"/\1/p' "$SRC/dlls/appwiz.cpl/addons.c")
 fetch_addon() { # <share/wine folder> <url>
     local archive=$WORK/dl/$(basename "$2")
-    [[ -f $archive ]] || curl -fL -o "$archive" "$2"
+    fetch "$2" "$archive"
     mkdir -p "$STAGE/share/wine/$1"
     tar -xJf "$archive" -C "$STAGE/share/wine/$1"
 }

@@ -45,6 +45,15 @@ jobs:
           tar -xJf "$archive" -C /Applications
           rm "$archive"
 
+      # Sources and packages downloaded by build-wine.sh (CrossOver, GStreamer,
+      # Mono, Gecko), kept between runs: CodeWeavers' server is sometimes slow
+      # and drops connections.
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/cave-build/dl
+          key: cave-build-dl-${{ env.CROSSOVER_VERSION }}-${{ hashFiles('scripts/build-wine.sh') }}
+          restore-keys: cave-build-dl-${{ env.CROSSOVER_VERSION }}-
+
       - name: Wine
         run: scripts/build-wine.sh "$CROSSOVER_VERSION"
 
