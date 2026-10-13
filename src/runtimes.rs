@@ -14,6 +14,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Embedded scripts and patches, with their relative path in the repository.
 /// A new patch in patches/wine must be added here (a test checks it).
@@ -229,6 +230,152 @@ fn extract_runtime(archive: &Path, tmp: &Path, dir: &Path) -> Result<InstalledRu
     Ok(InstalledRuntime { name, root })
 }
 
+/// Cave's releases on GitHub: each one carries a runtime, wine-cx-<version>.tar.xz.
+const RELEASES_API: &str = "https://api.github.com/repos/brunet-guillaume/cave/releases?per_page=30";
+
+/// A runtime published in a release of Cave.
+#[derive(Debug, PartialEq)]
+pub struct PublishedRuntime {
+    /// wine-cx-26.3.0
+    pub name: String,
+    pub url: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[derive(serde::Deserialize)]
+struct Release {
+    draft: bool,
+    prerelease: bool,
+    assets: Vec<Asset>,
+}
+
+#[derive(serde::Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
+    /// "sha256:<hex>", computed by GitHub when the file was uploaded.
+    digest: Option<String>,
+}
+
+/// The most recent runtime published with Cave.
+pub fn latest_published() -> Result<PublishedRuntime> {
+    let out = Command::new("curl")
+        .args(["-fsSL", "-H", "Accept: application/vnd.github+json", RELEASES_API])
+        .output()
+        .context("starting curl")?;
+    if !out.status.success() {
+        bail!(tr!(
+            "les versions de Cave sur GitHub sont inaccessibles ({})",
+            "Cave's releases on GitHub are unreachable ({})",
+            out.status
+        ));
+    }
+    latest_runtime(&String::from_utf8_lossy(&out.stdout))?.with_context(|| {
+        tr!("aucun runtime publié sur GitHub", "no runtime published on GitHub")
+    })
+}
+
+/// In the list of releases (GitHub API), the runtime with the highest
+/// version, outside drafts and pre-releases.
+fn latest_runtime(releases: &str) -> Result<Option<PublishedRuntime>> {
+    let releases: Vec<Release> = serde_json::from_str(releases).context("GitHub releases")?;
+    Ok(releases
+        .iter()
+        .filter(|r| !r.draft && !r.prerelease)
+        .flat_map(|r| &r.assets)
+        .filter_map(|a| {
+            let name = a.name.strip_prefix("wine-cx-")?.strip_suffix(".tar.xz")?;
+            let sha256 = a.digest.as_deref()?.strip_prefix("sha256:")?;
+            Some(PublishedRuntime {
+                name: format!("wine-cx-{name}"),
+                url: a.browser_download_url.clone(),
+                size: a.size,
+                sha256: sha256.to_string(),
+            })
+        })
+        .max_by(|a, b| version_key(&a.name).cmp(&version_key(&b.name))))
+}
+
+/// Where a runtime installation from GitHub stands.
+#[derive(Clone, Copy, Debug)]
+pub enum InstallStep {
+    Download { received: u64, total: u64 },
+    Check,
+    Extract,
+}
+
+/// Downloads the runtime into the cache, checks it and installs it. An
+/// interrupted download resumes where it stopped. Setting `cancel` stops the
+/// download, keeping what was received: the result is then None.
+pub fn install_published(
+    rt: &PublishedRuntime,
+    progress: &dyn Fn(InstallStep),
+    cancel: &AtomicBool,
+) -> Result<Option<InstalledRuntime>> {
+    if runtimes_dir()?.join(&rt.name).exists() {
+        bail!(tr!("le runtime {} est déjà installé", "runtime {} is already installed", rt.name));
+    }
+    let dir = crate::config::cache_dir()?.join("runtimes");
+    fs::create_dir_all(&dir)?;
+    let archive = dir.join(format!("{}.tar.xz", rt.name));
+    let part = dir.join(format!("{}.tar.xz.part", rt.name));
+    let size = |path: &Path| fs::metadata(path).map_or(0, |m| m.len());
+    if size(&part) < rt.size {
+        let mut curl = Command::new("curl")
+            .args(["-fsSL", "--retry", "3", "-C", "-", "-o"])
+            .arg(&part)
+            .arg(&rt.url)
+            .spawn()
+            .context("starting curl")?;
+        // curl writes as it receives: the file's size is the progress.
+        let status = loop {
+            if let Some(status) = curl.try_wait()? {
+                break status;
+            }
+            if cancel.load(Ordering::Relaxed) {
+                let _ = curl.kill();
+                let _ = curl.wait();
+                return Ok(None);
+            }
+            progress(InstallStep::Download { received: size(&part), total: rt.size });
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        };
+        if !status.success() {
+            bail!(tr!("téléchargement de {} impossible ({status})", "could not download {} ({status})", rt.url));
+        }
+    }
+    progress(InstallStep::Download { received: rt.size, total: rt.size });
+    progress(InstallStep::Check);
+    if sha256(&part)? != rt.sha256 {
+        let _ = fs::remove_file(&part);
+        bail!(tr!(
+            "empreinte incorrecte pour {} : téléchargement corrompu, réessaie",
+            "wrong checksum for {}: corrupted download, try again",
+            rt.name
+        ));
+    }
+    fs::rename(&part, &archive)?;
+    progress(InstallStep::Extract);
+    let installed = install_archive(&archive);
+    let _ = fs::remove_file(&archive);
+    installed.map(Some)
+}
+
+fn sha256(path: &Path) -> Result<String> {
+    let out = Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .arg(path)
+        .output()
+        .context("starting shasum")?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    match text.split_whitespace().next() {
+        Some(sum) if out.status.success() => Ok(sum.to_string()),
+        _ => bail!("shasum {}: {}", path.display(), String::from_utf8_lossy(&out.stderr)),
+    }
+}
+
 /// Writes the embedded scripts into the build folder and runs one of them
 /// ("scripts/build-wine.sh"…), with output shown in the terminal.
 pub fn run_script(script: &str, args: &[String]) -> Result<()> {
@@ -272,6 +419,38 @@ mod tests {
         assert_eq!(latest_version("<rss></rss>"), None);
         assert!(is_newer("26.10.0", "wine-cx-26.3.0"));
         assert!(!is_newer("26.3.0", "wine-cx-26.3.0"));
+    }
+
+    #[test]
+    fn finds_the_latest_published_runtime() {
+        let asset = |name: &str, digest: Option<&str>| {
+            format!(
+                r#"{{"name":"{name}","browser_download_url":"https://example.com/{name}","size":272,"digest":{}}}"#,
+                digest.map_or("null".to_string(), |d| format!("\"{d}\""))
+            )
+        };
+        let release = |draft: bool, prerelease: bool, assets: &[String]| {
+            format!(r#"{{"draft":{draft},"prerelease":{prerelease},"assets":[{}]}}"#, assets.join(","))
+        };
+        let releases = format!(
+            "[{},{},{},{}]",
+            release(false, true, &[asset("wine-cx-27.0.0.tar.xz", Some("sha256:beta"))]),
+            release(false, false, &[asset("Cave.zip", Some("sha256:app")), asset("wine-cx-26.10.0.tar.xz", Some("sha256:abc"))]),
+            release(false, false, &[asset("wine-cx-26.3.0.tar.xz", Some("sha256:old"))]),
+            release(true, false, &[asset("wine-cx-28.0.0.tar.xz", Some("sha256:draft"))]),
+        );
+        assert_eq!(
+            latest_runtime(&releases).unwrap(),
+            Some(PublishedRuntime {
+                name: "wine-cx-26.10.0".into(),
+                url: "https://example.com/wine-cx-26.10.0.tar.xz".into(),
+                size: 272,
+                sha256: "abc".into(),
+            })
+        );
+        let unchecked = format!("[{}]", release(false, false, &[asset("wine-cx-26.3.0.tar.xz", None)]));
+        assert_eq!(latest_runtime(&unchecked).unwrap(), None, "no checksum, no download");
+        assert!(latest_runtime("{\"message\":\"API rate limit exceeded\"}").is_err());
     }
 
     #[test]

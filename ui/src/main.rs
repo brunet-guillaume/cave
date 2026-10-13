@@ -10,6 +10,8 @@ use cave::bottle::Bottle;
 use cave::config::bottles_dir;
 use cave::runtime::{Graphics, Runtime};
 use cave::processes::Processes;
+use cave::runtimes::InstallStep;
+use std::sync::atomic::{AtomicBool, Ordering};
 use cave::steam::LaunchState;
 use cave::{apps, components, games, i18n, runtimes, steam, tr};
 use serde::Serialize;
@@ -251,21 +253,45 @@ async fn install_runtime(path: String) -> Result<String, String> {
     Ok(runtimes::install_archive(Path::new(&path)).map_err(text)?.name)
 }
 
-/// Asks for the runtime archive with the macOS file picker, then installs it;
-/// None if the user cancels. Async: the blocking picker must not run on the
-/// main thread.
+/// Asks for a runtime archive with the macOS file picker; None if the user
+/// cancels. Async: the blocking picker must not run on the main thread.
 #[tauri::command]
-async fn choose_runtime(app: AppHandle) -> Result<Option<String>, String> {
-    let file = app
-        .dialog()
+async fn pick_runtime(app: AppHandle) -> Option<String> {
+    app.dialog()
         .file()
         .set_title(tr!("Installer le runtime de Cave", "Install the Cave runtime"))
         .add_filter(tr!("Runtime de Cave", "Cave runtime"), &["xz"])
-        .blocking_pick_file();
-    let Some(path) = file.and_then(|f| f.into_path().ok()) else {
-        return Ok(None);
+        .blocking_pick_file()
+        .and_then(|f| f.into_path().ok())
+        .map(path_text)
+}
+
+/// Set by "Cancel" in the setup panel, read by the download in progress.
+static CANCEL_DOWNLOAD: AtomicBool = AtomicBool::new(false);
+
+/// Downloads the latest runtime published with Cave and installs it; the
+/// page follows along through "runtime-progress" events. None if cancelled.
+#[tauri::command]
+async fn download_runtime(app: AppHandle) -> Result<Option<String>, String> {
+    CANCEL_DOWNLOAD.store(false, Ordering::Relaxed);
+    let rt = runtimes::latest_published().map_err(text)?;
+    let progress = |step| {
+        let (step, received, total) = match step {
+            InstallStep::Download { received, total } => ("download", received, total),
+            InstallStep::Check => ("check", 0, 0),
+            InstallStep::Extract => ("extract", 0, 0),
+        };
+        let _ = app.emit("runtime-progress", (step, received, total));
     };
-    Ok(Some(runtimes::install_archive(&path).map_err(text)?.name))
+    let installed = runtimes::install_published(&rt, &progress, &CANCEL_DOWNLOAD).map_err(text)?;
+    Ok(installed.map(|rt| rt.name))
+}
+
+/// Stops the runtime download; what was received stays in the cache, and
+/// the next download resumes from there.
+#[tauri::command]
+fn cancel_runtime_download() {
+    CANCEL_DOWNLOAD.store(true, Ordering::Relaxed);
 }
 
 #[derive(Serialize)]
@@ -627,7 +653,9 @@ fn main() {
             install_app,
             install_path,
             install_runtime,
-            choose_runtime,
+            pick_runtime,
+            download_runtime,
+            cancel_runtime_download,
             add_portable,
             components,
             install_components,

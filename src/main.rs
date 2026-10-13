@@ -154,8 +154,9 @@ enum RuntimeCmd {
     },
     /// Looks for a newer CrossOver version to build the runtime from
     Check,
-    /// Installs a runtime from its archive (.tar.xz published with cave)
-    Install { archive: PathBuf },
+    /// Installs a runtime from its archive (.tar.xz published with cave);
+    /// without an archive, downloads the latest one from Cave's releases
+    Install { archive: Option<PathBuf> },
     /// Adds winetricks (Microsoft components) and cabextract to a runtime
     AddWinetricks { runtime: String },
     /// Adds DXMT (Direct3D 10/11 → Metal) to a runtime
@@ -169,6 +170,29 @@ enum RuntimeCmd {
     /// the Game Porting Toolkit downloaded from Apple (or a .tar.xz of a
     /// runtime's lib/apple_gptk folder)
     AddD3dmetal { runtime: String, dmg: PathBuf },
+}
+
+/// Downloads and installs the latest runtime published with Cave, showing
+/// the download's progress on one line.
+fn download_runtime() -> Result<runtimes::InstalledRuntime> {
+    use runtimes::InstallStep;
+    use std::io::Write;
+    let rt = runtimes::latest_published()?;
+    println!("Downloading {} ({} MB)…", rt.name, rt.size / 1_000_000);
+    let shown = std::cell::Cell::new(None);
+    let progress = |step| match step {
+        InstallStep::Download { received, total } => {
+            let percent = received * 100 / total.max(1);
+            if shown.replace(Some(percent)) != Some(percent) {
+                print!("\r  {percent} % ({} / {} MB)", received / 1_000_000, total / 1_000_000);
+                let _ = std::io::stdout().flush();
+            }
+        }
+        InstallStep::Check => println!("\nChecking the SHA-256 checksum…"),
+        InstallStep::Extract => println!("Installing…"),
+    };
+    let never = std::sync::atomic::AtomicBool::new(false);
+    runtimes::install_published(&rt, &progress, &never)?.context("download cancelled")
 }
 
 fn main() {
@@ -476,7 +500,10 @@ fn runtime_cmd(cmd: RuntimeCmd) -> Result<()> {
             Ok(())
         }
         RuntimeCmd::Install { archive } => {
-            let rt = runtimes::install_archive(&archive)?;
+            let rt = match archive {
+                Some(archive) => runtimes::install_archive(&archive)?,
+                None => download_runtime()?,
+            };
             println!("✓ Runtime {} installed: {}", rt.name, rt.root.display());
             Ok(())
         }

@@ -23,9 +23,14 @@
 <section id="setup" class="setup" hidden>
 <div class="setup-text">
 <h2 class="setup-title" data-en="Cave needs its runtime">Cave a besoin de son runtime</h2>
-<p data-en-html="It is Cave's Windows: Wine and its graphics layers, about 270 MB. Download &lt;strong&gt;wine-cx-….tar.xz&lt;/strong&gt; from &lt;a href=&quot;#&quot; data-link=&quot;releases&quot;&gt;Cave's releases page&lt;/a&gt;, then drop it on this window or choose it.">C'est le Windows de Cave : Wine et ses couches graphiques, environ 270 Mo. Télécharge <strong>wine-cx-….tar.xz</strong> sur la <a href="#" data-link="releases">page des versions de Cave</a>, puis dépose-le sur cette fenêtre ou choisis-le.</p>
+<p data-en-html="It is Cave&#x27;s Windows: Wine and its graphics layers, about 280 MB. Cave downloads it from its &lt;a href=&quot;#&quot; data-link=&quot;releases&quot;&gt;releases page&lt;/a&gt;; you can also drop &lt;strong&gt;wine-cx-….tar.xz&lt;/strong&gt; onto this window, or choose it.">C'est le Windows de Cave : Wine et ses couches graphiques, environ 280 Mo. Cave le télécharge depuis sa <a href="#" data-link="releases">page des versions</a> ; tu peux aussi déposer <strong>wine-cx-….tar.xz</strong> sur cette fenêtre, ou le choisir.</p>
+<div id="runtime-progress" class="setup-progress" hidden><span></span></div>
+<p id="runtime-status" class="setup-status" hidden></p>
 </div>
-<button id="choose-runtime" class="button button--primary" data-en="Choose File…">Choisir le fichier…</button>
+<div class="setup-actions">
+<button id="choose-runtime" class="button" data-en="Choose File…">Choisir le fichier…</button>
+<button id="download-runtime" class="button button--primary" data-en="Download">Télécharger</button>
+</div>
 </section>
 <section class="library-section" aria-labelledby="games-title">
 <h2 id="games-title" class="section-title" data-en="Games">Jeux</h2>

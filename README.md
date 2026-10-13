@@ -43,10 +43,10 @@ You need a Mac with Apple Silicon and Rosetta 2, which runs Wine:
 softwareupdate --install-rosetta --agree-to-license
 ```
 
-1. Download `Cave.zip` and the runtime, `wine-cx-<version>.tar.xz`, from the [Releases page](https://github.com/brunet-guillaume/cave/releases).
-2. Unzip `Cave.zip` and move **Cave.app** to your Applications folder.
+1. Download `Cave.zip` from the [Releases page](https://github.com/brunet-guillaume/cave/releases).
+2. Unzip it and move **Cave.app** to your Applications folder.
 3. Open Cave. It is not signed by Apple, so macOS blocks the first launch: go to **System Settings → Privacy & Security** and click **Open Anyway**.
-4. Drop the runtime archive onto Cave's window, or click **Choose File…**.
+4. Cave downloads its runtime (about 280 MB) by itself from the same Releases page, and checks it. Offline, drop a downloaded `wine-cx-<version>.tar.xz` onto the window instead, or click **Choose File…**.
 5. Install Steam or an application.
 
 ## Usage
@@ -71,6 +71,7 @@ cave play Steam "baba is you"                        # start a Steam game (appid
 cave components npp vcrun2022                        # install Microsoft components (no name: list them)
 cave graphics Steam dxmt                             # Direct3D renderer: d3dmetal, dxmt or wined3d
 cave list                                            # bottles (● running)
+cave runtime install                                 # download and install the latest runtime
 ```
 
 `cave --help` lists every command: bottles, runtimes, environment variables, logs…

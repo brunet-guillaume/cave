@@ -129,7 +129,7 @@ jobs:
             echo "1. Install Rosetta 2, which runs Wine: \`softwareupdate --install-rosetta --agree-to-license\`."
             echo "2. Unzip \`Cave.zip\` and move **Cave.app** to your Applications folder."
             echo "3. Open Cave. It is not signed by Apple: allow it in **System Settings → Privacy & Security → Open Anyway**."
-            echo "4. Drop \`$runtime\` onto Cave's window, or click **Choose File…**."
+            echo "4. Cave downloads \`$runtime\` from this release by itself. Offline, drop the file onto its window instead."
             echo
             echo "## What's new"
             echo

@@ -31,6 +31,8 @@ Steam also registers itself to start with Windows (the `Run` registry key), whic
 - **D3DMetal**: `ntdll` loads `libd3dshared.dylib` from `CX_APPLEGPTK_LIBD3DSHARED_PATH` (the variable name used by the sources); `cave runtime add-d3dmetal` copies the `redist/lib` folder of the Game Porting Toolkit, as Apple's Read Me does for CrossOver.
 - **GStreamer** (game videos through Media Foundation) comes from the official, universal macOS package: it is extracted without being installed, checked against its SHA-256 checksum (it is not signed), then its libraries and 17 plugins are bundled in the runtime.
 
+Runtimes are published with Cave's releases on GitHub, built by the release workflow (`.github/workflows/release.yml`). When it has no runtime, the interface downloads one as soon as it opens (its "Cancel" button stops it, keeping what was received); `cave runtime install` without an archive does the same. Both ask GitHub's API for the releases, pick the `wine-cx-*.tar.xz` with the highest version, download it with `curl` (an interrupted download resumes), check the SHA-256 digest GitHub computed when the file was uploaded, then install it (`runtimes::install_published`).
+
 The `cave runtime` commands run the scripts in `scripts/`, embedded in Cave along with the patches in `patches/wine`: they also work from a `cave` installed with `cargo install`. `cave runtime check` reads CodeWeavers' release feed and tells whether a newer CrossOver version (and its sources) is available.
 
 ## Applications

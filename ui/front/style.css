@@ -213,6 +213,26 @@ body.has-more .app-footer { border-top-color: var(--border); }
 .setup-title { margin: 0 0 4px; font-size: 15px; }
 .setup p { margin: 0; color: var(--muted); line-height: 1.45; }
 .setup a { color: var(--accent-strong); }
+.setup-actions { display: flex; gap: 8px; }
+.setup-progress {
+  height: 6px;
+  margin: 12px 0 0;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border);
+}
+.setup-progress span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent-strong);
+}
+/* Checksum and extraction: no measurable progress, a sliding segment. */
+.setup-progress.is-indeterminate span { width: 30%; animation: indeterminate 1.2s ease-in-out infinite; }
+@keyframes indeterminate { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.setup-progress[hidden], .setup-status[hidden] { display: none; }
+.setup .setup-status { margin-top: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* ——— Tile menu ——— */
 .menu {

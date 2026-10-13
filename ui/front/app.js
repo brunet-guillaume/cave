@@ -589,24 +589,96 @@ async function installSteam() {
 $("install-app").addEventListener("click", installApp);
 
 // ——— Runtime (first launch) ———
+// Without a runtime, Cave downloads it as soon as it opens. "Cancel" stops
+// the download (what was received is kept: "Download" resumes from there),
+// and an archive dropped or chosen meanwhile is installed instead.
 
-async function installRuntime(run) {
-  const button = $("choose-runtime");
-  button.disabled = true;
-  button.textContent = t("Installation…", "Installing…");
+let runtimeDownload = null; // download_runtime in progress
+
+// idle: "Choose File…" and "Download"; downloading: "Download" becomes
+// "Cancel"; installing: both wait.
+function setupState(state) {
+  const download = $("download-runtime");
+  download.textContent = state === "downloading" ? t("Annuler", "Cancel") : t("Télécharger", "Download");
+  download.classList.toggle("button--primary", state !== "downloading");
+  download.disabled = $("choose-runtime").disabled = state === "installing";
+  if (state === "idle") $("runtime-progress").hidden = $("runtime-status").hidden = true;
+}
+
+function setupStatus(text) {
+  $("runtime-status").textContent = text;
+  $("runtime-status").hidden = $("runtime-progress").hidden = false;
+}
+
+const megabytes = (bytes) => `${Math.round(bytes / 1e6)} ${t("Mo", "MB")}`;
+
+// Fraction received, or null when the duration cannot be measured.
+function setupProgress(fraction) {
+  const bar = $("runtime-progress");
+  bar.classList.toggle("is-indeterminate", fraction === null);
+  bar.firstElementChild.style.width = fraction === null ? "" : `${fraction * 100}%`;
+}
+
+listen("runtime-progress", ({ payload: [step, received, total] }) => {
+  if (step === "download") {
+    setupProgress(total ? received / total : 0);
+    setupStatus(t(`${megabytes(received)} sur ${megabytes(total)}`, `${megabytes(received)} of ${megabytes(total)}`));
+  } else {
+    // Checksum, then extraction: no measurable progress, nothing to cancel.
+    setupState("installing");
+    setupProgress(null);
+    setupStatus(step === "check" ? t("Vérification de l'empreinte…", "Checking the checksum…") : t("Installation…", "Installing…"));
+  }
+});
+
+async function downloadRuntime() {
+  setupState("downloading");
+  setupStatus(t("Recherche du runtime…", "Looking for the runtime…"));
+  setupProgress(0);
+  runtimeDownload = call("download_runtime");
   try {
-    const name = await run();
-    if (name) toast(t(`Runtime ${name} installé ✓`, `Runtime ${name} installed ✓`));
+    const name = await runtimeDownload; // null if cancelled
+    if (name) {
+      toast(t(`Runtime ${name} installé ✓`, `Runtime ${name} installed ✓`));
+      await refresh();
+    }
+  } catch {
+    // Error already shown by call().
+  } finally {
+    runtimeDownload = null;
+    setupState("idle");
+  }
+}
+
+// Stops the download, if any, and waits until it has really stopped.
+async function stopRuntimeDownload() {
+  if (!runtimeDownload) return;
+  const download = runtimeDownload;
+  await invoke("cancel_runtime_download");
+  await download.catch(() => {});
+}
+
+async function installRuntimeFile(path) {
+  await stopRuntimeDownload();
+  setupState("installing");
+  setupStatus(t("Installation…", "Installing…"));
+  setupProgress(null);
+  try {
+    const name = await call("install_runtime", { path });
+    toast(t(`Runtime ${name} installé ✓`, `Runtime ${name} installed ✓`));
     await refresh();
   } catch {
     // Error already shown by call().
   } finally {
-    button.disabled = false;
-    button.textContent = t("Choisir le fichier…", "Choose File…");
+    setupState("idle");
   }
 }
 
-$("choose-runtime").addEventListener("click", () => installRuntime(() => call("choose_runtime")));
+$("download-runtime").addEventListener("click", () => (runtimeDownload ? stopRuntimeDownload() : downloadRuntime()));
+$("choose-runtime").addEventListener("click", async () => {
+  const path = await call("pick_runtime").catch(() => null);
+  if (path) installRuntimeFile(path);
+});
 $("install-steam").addEventListener("click", installSteam);
 
 listen("install-started", ({ payload: [bottle, file, shared] }) => {
@@ -734,8 +806,12 @@ listen("tauri://drag-drop", ({ payload }) => {
   const into = dropTile?.dataset.bottle ?? null;
   setDropTile(null);
   const runtime = (payload?.paths ?? []).find(isRuntime);
-  if (runtime) return installRuntime(() => call("install_runtime", { path: runtime }));
-  if (!lib.runtime) return toast(t("Installe d'abord le runtime de Cave (wine-cx-….tar.xz).", "Install Cave's runtime first (wine-cx-….tar.xz)."));
+  if (runtime) return installRuntimeFile(runtime);
+  if (!lib.runtime) {
+    return toast(runtimeDownload
+      ? t("Le runtime de Cave est en cours de téléchargement : dépose ton programme ensuite.", "Cave's runtime is downloading: drop your program afterwards.")
+      : t("Installe d'abord le runtime de Cave.", "Install Cave's runtime first."));
+  }
   const installers = (payload?.paths ?? []).filter(isInstaller);
   if (!installers.length) return toast(t("Dépose un programme Windows (.exe ou .msi) pour l'installer.", "Drop a Windows program (.exe or .msi) to install it."));
   for (const path of installers) call("install_path", { path, into }).catch(() => {});
@@ -783,7 +859,8 @@ function translatePage() {
 async function start() {
   fr = (await invoke("language").catch(() => "fr")) === "fr";
   translatePage();
-  refresh();
+  const loaded = await refresh().then(() => true, () => false);
   setInterval(pollRunning, 3000);
+  if (loaded && !lib.runtime) downloadRuntime();
 }
 start();
