@@ -154,6 +154,9 @@ enum RuntimeCmd {
     },
     /// Looks for a newer CrossOver version to build the runtime from
     Check,
+    /// Installs the latest runtime published with Cave, if it is newer, and
+    /// moves the bottles to it (their open programs are closed)
+    Update,
     /// Installs a runtime from its archive (.tar.xz published with cave);
     /// without an archive, downloads the latest one from Cave's releases
     Install { archive: Option<PathBuf> },
@@ -172,15 +175,21 @@ enum RuntimeCmd {
     AddD3dmetal { runtime: String, dmg: PathBuf },
 }
 
-/// Downloads and installs the latest runtime published with Cave, showing
-/// the download's progress on one line.
+/// Downloads and installs the latest runtime published with Cave.
 fn download_runtime() -> Result<runtimes::InstalledRuntime> {
-    use runtimes::InstallStep;
-    use std::io::Write;
     let rt = runtimes::latest_published()?;
     println!("Downloading {} ({} MB)…", rt.name, rt.size / 1_000_000);
+    let never = std::sync::atomic::AtomicBool::new(false);
+    runtimes::install_published(&rt, &install_progress(), &never)?.context("download cancelled")
+}
+
+/// Shows a runtime installation: the download's progress on one line, then
+/// each step.
+fn install_progress() -> impl Fn(runtimes::InstallStep) {
+    use runtimes::InstallStep;
+    use std::io::Write;
     let shown = std::cell::Cell::new(None);
-    let progress = |step| match step {
+    move |step| match step {
         InstallStep::Download { received, total } => {
             let percent = received * 100 / total.max(1);
             if shown.replace(Some(percent)) != Some(percent) {
@@ -190,9 +199,9 @@ fn download_runtime() -> Result<runtimes::InstalledRuntime> {
         }
         InstallStep::Check => println!("\nChecking the SHA-256 checksum…"),
         InstallStep::Extract => println!("Installing…"),
-    };
-    let never = std::sync::atomic::AtomicBool::new(false);
-    runtimes::install_published(&rt, &progress, &never)?.context("download cancelled")
+        InstallStep::Switch => println!("Moving the bottles to the new runtime…"),
+        InstallStep::Prepare => println!("Preparing Windows for new bottles (about a minute)…"),
+    }
 }
 
 fn main() {
@@ -482,6 +491,22 @@ fn runtime_cmd(cmd: RuntimeCmd) -> Result<()> {
                     rt.layers().join(" "),
                     if users.is_empty() { "-".into() } else { users.join(" ") }
                 );
+            }
+            Ok(())
+        }
+        RuntimeCmd::Update => {
+            let Some(rt) = runtimes::update_available()? else {
+                let current = runtimes::default()?.map(|rt| rt.name);
+                println!("✓ Up to date: {}", current.as_deref().unwrap_or("no runtime installed (cave runtime install)"));
+                return Ok(());
+            };
+            let previous = runtimes::default()?.map(|rt| rt.name);
+            println!("Updating to {} ({} MB)…", rt.name, rt.size / 1_000_000);
+            let never = std::sync::atomic::AtomicBool::new(false);
+            let new = runtimes::update(&rt, &install_progress(), &never)?.context("download cancelled")?;
+            println!("✓ The bottles now use {}.", new.name);
+            if let Some(previous) = previous {
+                println!("  {previous} stays installed: cave wine <bottle> {previous} goes back to it.");
             }
             Ok(())
         }

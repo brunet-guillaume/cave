@@ -146,12 +146,23 @@ impl Bottle {
         Ok(bottle)
     }
 
+    /// Folder of a runtime's bottle template: templates/<runtime>-win10.
+    pub fn template_dir(runtime: &str) -> Result<PathBuf> {
+        Ok(data_dir()?.join("templates").join(format!("{runtime}-{WINDOWS}")))
+    }
+
+    /// Prepares the runtime's template now (about a minute), so that the
+    /// next new bottle is instant: after a runtime update.
+    pub fn prepare_template(runtime: &InstalledRuntime, progress: &dyn Fn(&str)) -> Result<()> {
+        Self::template(runtime, progress).map(|_| ())
+    }
+
     /// A runtime's bottle template, in templates/<runtime>-win10.
     /// It is prepared (wineboot) in a temporary folder then renamed: an
     /// interrupted preparation doesn't leave a half-ready template behind.
     fn template(runtime: &InstalledRuntime, progress: &dyn Fn(&str)) -> Result<Self> {
-        let dir = data_dir()?.join("templates");
-        let root = dir.join(format!("{}-{WINDOWS}", runtime.name));
+        let root = Self::template_dir(&runtime.name)?;
+        let dir = root.parent().with_context(|| tr!("dossier des modèles", "templates folder"))?.to_path_buf();
         if root.join("bottle.toml").is_file() {
             return Self::load_at(root);
         }

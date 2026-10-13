@@ -269,22 +269,55 @@ async fn pick_runtime(app: AppHandle) -> Option<String> {
 /// Set by "Cancel" in the setup panel, read by the download in progress.
 static CANCEL_DOWNLOAD: AtomicBool = AtomicBool::new(false);
 
+/// Sends the steps of a runtime installation to the page ("runtime-progress").
+fn emit_progress(app: &AppHandle, step: InstallStep) {
+    let (step, received, total) = match step {
+        InstallStep::Download { received, total } => ("download", received, total),
+        InstallStep::Check => ("check", 0, 0),
+        InstallStep::Extract => ("extract", 0, 0),
+        InstallStep::Switch => ("switch", 0, 0),
+        InstallStep::Prepare => ("prepare", 0, 0),
+    };
+    let _ = app.emit("runtime-progress", (step, received, total));
+}
+
 /// Downloads the latest runtime published with Cave and installs it; the
 /// page follows along through "runtime-progress" events. None if cancelled.
 #[tauri::command]
 async fn download_runtime(app: AppHandle) -> Result<Option<String>, String> {
     CANCEL_DOWNLOAD.store(false, Ordering::Relaxed);
     let rt = runtimes::latest_published().map_err(text)?;
-    let progress = |step| {
-        let (step, received, total) = match step {
-            InstallStep::Download { received, total } => ("download", received, total),
-            InstallStep::Check => ("check", 0, 0),
-            InstallStep::Extract => ("extract", 0, 0),
-        };
-        let _ = app.emit("runtime-progress", (step, received, total));
-    };
-    let installed = runtimes::install_published(&rt, &progress, &CANCEL_DOWNLOAD).map_err(text)?;
+    let installed =
+        runtimes::install_published(&rt, &|step| emit_progress(&app, step), &CANCEL_DOWNLOAD).map_err(text)?;
     Ok(installed.map(|rt| rt.name))
+}
+
+#[derive(Serialize)]
+struct RuntimeUpdate {
+    name: String,
+    size: u64,
+    /// Tag of the release that carries it, for its notes.
+    release: String,
+}
+
+/// A published runtime more recent than the installed one, if any. Checked
+/// when the page opens; offline, there is simply no update.
+#[tauri::command]
+async fn runtime_update() -> Option<RuntimeUpdate> {
+    let rt = runtimes::update_available().ok()??;
+    Some(RuntimeUpdate { name: rt.name, size: rt.size, release: rt.release })
+}
+
+/// Installs the newer runtime and moves the bottles to it (their open
+/// programs are closed: the page asks first). None if cancelled.
+#[tauri::command]
+async fn update_runtime(app: AppHandle) -> Result<Option<String>, String> {
+    CANCEL_DOWNLOAD.store(false, Ordering::Relaxed);
+    let Some(rt) = runtimes::update_available().map_err(text)? else {
+        return Err(tr!("le runtime est déjà à jour", "the runtime is already up to date"));
+    };
+    let new = runtimes::update(&rt, &|step| emit_progress(&app, step), &CANCEL_DOWNLOAD).map_err(text)?;
+    Ok(new.map(|rt| rt.name))
 }
 
 /// Stops the runtime download; what was received stays in the cache, and
@@ -469,15 +502,26 @@ fn language() -> &'static str {
     }
 }
 
-/// Opens one of the footer links in the browser (fixed addresses: the page
-/// cannot get just any URL opened).
+/// A release tag of Cave: "v" or "wine-cx-", then a version (digits and dots).
+fn is_release_tag(tag: &str) -> bool {
+    tag.strip_prefix("wine-cx-")
+        .or_else(|| tag.strip_prefix('v'))
+        .is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+}
+
+/// Opens one of the page's links in the browser: fixed addresses, or a
+/// release page of Cave (the page cannot get just any URL opened).
 #[tauri::command]
 fn open_link(link: String) -> Result<(), String> {
     let url = match link.as_str() {
-        "crossover" => "https://www.codeweavers.com/crossover",
-        "sources" => "https://www.codeweavers.com/crossover/source",
-        "releases" => "https://github.com/brunet-guillaume/cave/releases",
-        other => return Err(tr!("lien inconnu : {other}", "unknown link: {other}")),
+        "crossover" => "https://www.codeweavers.com/crossover".to_string(),
+        "sources" => "https://www.codeweavers.com/crossover/source".to_string(),
+        "releases" => "https://github.com/brunet-guillaume/cave/releases".to_string(),
+        // A release page ("release:wine-cx-26.10.0", "release:v0.3.0"), with its notes.
+        other => match other.strip_prefix("release:") {
+            Some(tag) if is_release_tag(tag) => format!("https://github.com/brunet-guillaume/cave/releases/tag/{tag}"),
+            _ => return Err(tr!("lien inconnu : {other}", "unknown link: {other}")),
+        },
     };
     Command::new("open").arg(url).status().map_err(|e| e.to_string())?;
     Ok(())
@@ -656,6 +700,8 @@ fn main() {
             pick_runtime,
             download_runtime,
             cancel_runtime_download,
+            runtime_update,
+            update_runtime,
             add_portable,
             components,
             install_components,

@@ -40,19 +40,20 @@ DEST="$RUNTIMES/wine-cx-$VERSION"
 step() { printf '\n==> %s\n' "$*"; }
 
 # Downloads into <file>.part, then renames: an interrupted download never
-# passes for a finished one. CodeWeavers' server sometimes cuts connections
-# after a minute or two (from GitHub's machines): the download resumes where
-# it stopped, as long as each attempt brings something new.
+# passes for a finished one. Servers sometimes fail from GitHub's machines:
+# CodeWeavers' cuts connections after a minute or two, GStreamer's answers
+# 503. The download resumes where it stopped as long as each attempt brings
+# something new; a server sending nothing gets 20, 40, then 60 seconds.
 fetch() { # <url> <file>
     [[ -f $2 ]] && return 0
     local size=-1 now stalls=0
     until curl -fL -C - -o "$2.part" "$1"; do
         now=$(stat -f %z "$2.part" 2>/dev/null || echo 0)
         if ((now > size)); then stalls=0; else stalls=$((stalls + 1)); fi
-        ((stalls < 3)) || return 1
+        ((stalls < 4)) || return 1
         size=$now
-        echo "download interrupted at $now bytes, resuming: $1" >&2
-        sleep 3
+        echo "download interrupted at $now bytes, resuming in $((3 + stalls * 20)) s: $1" >&2
+        sleep $((3 + stalls * 20))
     done
     mv "$2.part" "$2"
 }
@@ -111,6 +112,14 @@ fi
 # The official macOS package is universal: we extract it without installing
 # it (no sudo) and merge its components into a local framework.
 GST_VERSION=1.28.8
+# The packages are not signed: their published checksums (<pkg>.sha256sum),
+# pinned here, which also spares asking GStreamer's server each time.
+gst_sha256() { # <kind: "" or devel->
+    case $1 in
+        "") echo d371ab04a7632713626836c2fc234e863cc98484c74c473eba99b0fbd9b3a3fe ;;
+        devel-) echo e6d380bc17be7eccf13e0154567d4718fc9321da822408c7ca0cd808b3d4a3f7 ;;
+    esac
+}
 GST=$WORK/src/gstreamer-$GST_VERSION/fw
 if [[ ! -f $GST/lib/pkgconfig/gstreamer-1.0.pc ]]; then
     step "GStreamer $GST_VERSION"
@@ -119,10 +128,8 @@ if [[ ! -f $GST/lib/pkgconfig/gstreamer-1.0.pc ]]; then
         pkg=gstreamer-1.0-$kind$GST_VERSION-universal.pkg
         url=https://gstreamer.freedesktop.org/data/pkg/osx/$GST_VERSION/$pkg
         fetch "$url" "$WORK/dl/$pkg"
-        # Unsigned packages: at least check the published checksum.
-        sum=$(curl -fsL --retry 5 "$url.sha256sum" | awk '{print $1}')
-        [[ $(shasum -a 256 "$WORK/dl/$pkg" | awk '{print $1}') == "$sum" ]] ||
-            { echo "wrong SHA-256 checksum: $pkg" >&2; exit 1; }
+        [[ $(shasum -a 256 "$WORK/dl/$pkg" | awk '{print $1}') == "$(gst_sha256 "$kind")" ]] ||
+            { echo "wrong SHA-256 checksum: $pkg" >&2; rm -f "$WORK/dl/$pkg"; exit 1; }
         rm -rf "$tmp"
         mkdir -p "$(dirname "$tmp")" # pkgutil does not create the parent folder
         pkgutil --expand-full "$WORK/dl/$pkg" "$tmp"

@@ -1,0 +1,160 @@
+# Every Monday, looks for a new CrossOver version in CodeWeavers' feed. Once
+# its sources are published, builds Cave's runtime from them (Wine, DXMT,
+# D3DMetal, GStreamer, winetricks) and drafts a wine-cx-<version> Release:
+# try the runtime, then publish the release, and Cave offers it as an update.
+# Run by hand, it builds the version given (or the latest one).
+name: Runtime
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: CrossOver version (empty for the latest one)
+        required: false
+      force:
+        description: Build even if a release already carries this runtime
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # read the D3DMetal draft release, create the new draft
+
+env:
+  FEED: https://www.codeweavers.com/xml/versions/cxmac.xml
+  # Gcenx's Wine build, whose x86_64 libraries (gnutls, freetype, SDL2,
+  # MoltenVK…) go into the runtime.
+  WINE_DEVEL_VERSION: "11.18"
+  WINE_DEVEL_SHA256: aa0ea4c82e636ae7bca2076387cb0a5affa26509ad13f119ecd0d62bd7ba6f82
+  # Draft release holding Apple's Game Porting Toolkit redist (D3DMetal): a
+  # workflow cannot download it from Apple, which requires an account.
+  D3DMETAL_RELEASE: d3dmetal-gptk-3.0
+  # Draft release mirroring what the build scripts download (CrossOver
+  # sources, GStreamer, Mono, Gecko, DXMT…): their servers sometimes fail
+  # from GitHub's machines (slow, cut or 503).
+  DEPS_RELEASE: build-deps
+  DL: ~/Library/Caches/cave-build/dl
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          latest=$(curl -fsSL --retry 5 "$FEED" | grep -o 'sparkle:shortVersionString="[^"]*"' |
+            cut -d'"' -f2 | sort -V | tail -1)
+          version=${VERSION:-$latest}
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # A release, draft or not, already carries it: nothing to do (a
+          # draft waiting to be tried must not be rebuilt every week).
+          if [[ $FORCE != true ]] &&
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].assets[].name' |
+            grep -qx "wine-cx-$version.tar.xz"; then
+            echo "wine-cx-$version is already in a release"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          # CodeWeavers sometimes publishes the sources a few days after the app.
+          elif ! curl -fsIL --retry 3 -o /dev/null \
+            "https://media.codeweavers.com/pub/crossover/source/crossover-sources-$version.tar.gz"; then
+            echo "::notice::CrossOver $version: sources not published yet"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Building wine-cx-$version"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  runtime:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    # arm64, like the Macs Cave runs on: Wine's x86_64 side is built under
+    # Rosetta, as on a developer's Mac.
+    runs-on: macos-26
+    timeout-minutes: 360
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build tools
+        run: brew install bison mingw-w64 sdl2 freetype gnutls pkgconf
+
+      - name: Wine Devel.app
+        run: |
+          archive=$RUNNER_TEMP/wine-devel.tar.xz
+          curl -fsSL -o "$archive" \
+            "https://github.com/Gcenx/macOS_Wine_builds/releases/download/$WINE_DEVEL_VERSION/wine-devel-$WINE_DEVEL_VERSION-osx64.tar.xz"
+          echo "$WINE_DEVEL_SHA256  $archive" | shasum -a 256 -c
+          tar -xJf "$archive" -C /Applications
+          rm "$archive"
+
+      # The scripts skip the files already there: only what the mirror lacks
+      # (the sources of a new CrossOver version…) comes from its server.
+      - name: Downloads from the mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dl=$(eval echo "$DL")
+          mkdir -p "$dl"
+          gh release download "$DEPS_RELEASE" -D "$dl" --skip-existing || echo "::warning::no $DEPS_RELEASE mirror"
+          ls -l "$dl"
+
+      - name: Wine
+        run: scripts/build-wine.sh "$VERSION"
+
+      - name: DXMT
+        run: scripts/add-dxmt.sh "wine-cx-$VERSION"
+
+      - name: D3DMetal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$D3DMETAL_RELEASE" -D "$RUNNER_TEMP" -p "$D3DMETAL_RELEASE.tar.xz"
+          scripts/add-d3dmetal.sh "$RUNNER_TEMP/$D3DMETAL_RELEASE.tar.xz" "wine-cx-$VERSION"
+
+      - name: Archive
+        run: scripts/package-runtime.sh "wine-cx-$VERSION" "$RUNNER_TEMP/out"
+
+      - name: Update the mirror
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dl=$(eval echo "$DL")
+          have=$(gh release view "$DEPS_RELEASE" --json assets --jq '.assets[].name')
+          for f in "$dl"/*; do
+            name=$(basename "$f")
+            [[ -f $f && $name != *.part ]] && ! grep -qxF "$name" <<<"$have" || continue
+            echo "adding $name"
+            gh release upload "$DEPS_RELEASE" "$f"
+          done
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Cave's runtime built from the CrossOver $VERSION sources published by CodeWeavers, with D3DMetal, DXMT, GStreamer, Wine Mono, Wine Gecko and winetricks."
+            echo
+            echo "Once this release is published, Cave offers it as an update, and downloads it on a new Mac's first launch."
+            echo
+            echo "## Changes in CrossOver $VERSION"
+            echo
+            curl -fsSL --retry 5 "$FEED" | python3 scripts/crossover-changelog.py "$VERSION"
+            echo
+            echo "## Checksum (SHA-256)"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP"/out/*.sha256
+            echo '```'
+            echo
+            echo "Cave is a personal, non-commercial project, not affiliated with CodeWeavers. The runtime's legal notices are in its \`NOTICES\` folder; D3DMetal is redistributed for non-commercial use only, under Apple's license."
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "wine-cx-$VERSION" --draft --latest=false --target "$GITHUB_SHA" \
+            --title "Runtime wine-cx-$VERSION" --notes-file "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP"/out/*

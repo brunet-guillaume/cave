@@ -33,6 +33,7 @@ Cave installs Steam and Windows programs on a Mac and shows them as a simple lib
 - **Modern graphics**: Direct3D 10, 11 and 12 translated to Metal by D3DMetal or DXMT.
 - **Microsoft components**: Visual C++, .NET and Microsoft fonts, installed from a tile's menu.
 - **At home on macOS**: programs carry their own name in the Dock and come to the front when launched; the interface follows the language of macOS (English or French).
+- **Up to date with CrossOver**: when CodeWeavers publishes a new version, a new runtime is built from its sources, and Cave offers it as an update.
 - **A command line**, `cave`, for everything the interface does and more.
 
 ## Installation
@@ -72,6 +73,7 @@ cave components npp vcrun2022                        # install Microsoft compone
 cave graphics Steam dxmt                             # Direct3D renderer: d3dmetal, dxmt or wined3d
 cave list                                            # bottles (● running)
 cave runtime install                                 # download and install the latest runtime
+cave runtime update                                  # move to a newer published runtime
 ```
 
 `cave --help` lists every command: bottles, runtimes, environment variables, logs…

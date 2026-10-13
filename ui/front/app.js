@@ -588,12 +588,36 @@ async function installSteam() {
 
 $("install-app").addEventListener("click", installApp);
 
-// ——— Runtime (first launch) ———
-// Without a runtime, Cave downloads it as soon as it opens. "Cancel" stops
-// the download (what was received is kept: "Download" resumes from there),
-// and an archive dropped or chosen meanwhile is installed instead.
+// ——— Runtime ———
+// Without a runtime, Cave downloads it as soon as it opens (setup panel).
+// "Cancel" stops the download (what was received is kept: "Download"
+// resumes from there), and an archive dropped or chosen meanwhile is
+// installed instead. With a runtime, Cave checks whether a newer one is
+// published and offers it (update panel): the bottles move to it, and the
+// previous one stays installed as a fallback.
 
-let runtimeDownload = null; // download_runtime in progress
+let runtimeDownload = null; // download_runtime or update_runtime in progress
+let runtimePanel = $("setup"); // the panel showing its progress
+
+const megabytes = (bytes) => `${Math.round(bytes / 1e6)} ${t("Mo", "MB")}`;
+
+// Fraction received, or null when the duration cannot be measured.
+function panelProgress(fraction) {
+  const bar = runtimePanel.querySelector(".setup-progress");
+  bar.hidden = false;
+  bar.classList.toggle("is-indeterminate", fraction === null);
+  bar.firstElementChild.style.width = fraction === null ? "" : `${fraction * 100}%`;
+}
+
+function panelStatus(text) {
+  const status = runtimePanel.querySelector(".setup-status");
+  status.textContent = text;
+  status.hidden = false;
+}
+
+function hidePanelProgress(panel) {
+  panel.querySelector(".setup-progress").hidden = panel.querySelector(".setup-status").hidden = true;
+}
 
 // idle: "Choose File…" and "Download"; downloading: "Download" becomes
 // "Cancel"; installing: both wait.
@@ -602,53 +626,65 @@ function setupState(state) {
   download.textContent = state === "downloading" ? t("Annuler", "Cancel") : t("Télécharger", "Download");
   download.classList.toggle("button--primary", state !== "downloading");
   download.disabled = $("choose-runtime").disabled = state === "installing";
-  if (state === "idle") $("runtime-progress").hidden = $("runtime-status").hidden = true;
+  if (state === "idle") hidePanelProgress($("setup"));
 }
 
-function setupStatus(text) {
-  $("runtime-status").textContent = text;
-  $("runtime-status").hidden = $("runtime-progress").hidden = false;
+// Same for the update panel: "Later" and "Update", which becomes "Cancel".
+function updateState(state) {
+  const now = $("update-now");
+  now.textContent = state === "downloading" ? t("Annuler", "Cancel") : t("Mettre à jour", "Update");
+  now.classList.toggle("button--primary", state !== "downloading");
+  now.disabled = $("update-later").disabled = state === "installing";
+  if (state === "idle") hidePanelProgress($("update"));
 }
 
-const megabytes = (bytes) => `${Math.round(bytes / 1e6)} ${t("Mo", "MB")}`;
+const panelState = (state) => (runtimePanel === $("update") ? updateState(state) : setupState(state));
 
-// Fraction received, or null when the duration cannot be measured.
-function setupProgress(fraction) {
-  const bar = $("runtime-progress");
-  bar.classList.toggle("is-indeterminate", fraction === null);
-  bar.firstElementChild.style.width = fraction === null ? "" : `${fraction * 100}%`;
+function stepText(step) {
+  return {
+    check: t("Vérification de l'empreinte…", "Checking the checksum…"),
+    extract: t("Installation…", "Installing…"),
+    switch: t("Passage des bouteilles au nouveau runtime…", "Moving the bottles to the new runtime…"),
+    prepare: t("Préparation de Windows pour les nouvelles bouteilles (environ une minute)…", "Preparing Windows for new bottles (about a minute)…"),
+  }[step] ?? "";
 }
 
 listen("runtime-progress", ({ payload: [step, received, total] }) => {
   if (step === "download") {
-    setupProgress(total ? received / total : 0);
-    setupStatus(t(`${megabytes(received)} sur ${megabytes(total)}`, `${megabytes(received)} of ${megabytes(total)}`));
+    panelProgress(total ? received / total : 0);
+    panelStatus(t(`${megabytes(received)} sur ${megabytes(total)}`, `${megabytes(received)} of ${megabytes(total)}`));
   } else {
-    // Checksum, then extraction: no measurable progress, nothing to cancel.
-    setupState("installing");
-    setupProgress(null);
-    setupStatus(step === "check" ? t("Vérification de l'empreinte…", "Checking the checksum…") : t("Installation…", "Installing…"));
+    // After the download: no measurable progress, nothing to cancel.
+    panelState("installing");
+    panelProgress(null);
+    panelStatus(stepText(step));
   }
 });
 
-async function downloadRuntime() {
-  setupState("downloading");
-  setupStatus(t("Recherche du runtime…", "Looking for the runtime…"));
-  setupProgress(0);
-  runtimeDownload = call("download_runtime");
+// Runs download_runtime or update_runtime, its progress shown in `panel`.
+async function runRuntimeTask(panel, command, done) {
+  runtimePanel = panel;
+  panelState("downloading");
+  panelStatus(t("Recherche du runtime…", "Looking for the runtime…"));
+  panelProgress(0);
+  runtimeDownload = call(command);
   try {
     const name = await runtimeDownload; // null if cancelled
     if (name) {
-      toast(t(`Runtime ${name} installé ✓`, `Runtime ${name} installed ✓`));
+      toast(done(name));
+      if (panel === $("update")) panel.hidden = true;
       await refresh();
     }
   } catch {
     // Error already shown by call().
   } finally {
     runtimeDownload = null;
-    setupState("idle");
+    panelState("idle");
   }
 }
+
+const downloadRuntime = () =>
+  runRuntimeTask($("setup"), "download_runtime", (name) => t(`Runtime ${name} installé ✓`, `Runtime ${name} installed ✓`));
 
 // Stops the download, if any, and waits until it has really stopped.
 async function stopRuntimeDownload() {
@@ -660,9 +696,10 @@ async function stopRuntimeDownload() {
 
 async function installRuntimeFile(path) {
   await stopRuntimeDownload();
+  runtimePanel = $("setup");
   setupState("installing");
-  setupStatus(t("Installation…", "Installing…"));
-  setupProgress(null);
+  panelStatus(t("Installation…", "Installing…"));
+  panelProgress(null);
   try {
     const name = await call("install_runtime", { path });
     toast(t(`Runtime ${name} installé ✓`, `Runtime ${name} installed ✓`));
@@ -673,6 +710,31 @@ async function installRuntimeFile(path) {
     setupState("idle");
   }
 }
+
+// A newer published runtime: offered, never installed without asking.
+async function checkRuntimeUpdate() {
+  const update = await invoke("runtime_update").catch(() => null);
+  if (!update) return;
+  $("update-text").textContent = t(
+    `${update.name} remplace ${lib.runtime} (environ ${megabytes(update.size)}). Tes bouteilles passeront dessus ; l'actuel reste installé en secours.`,
+    `${update.name} replaces ${lib.runtime} (about ${megabytes(update.size)}). Your bottles will move to it; the current one stays installed as a fallback.`,
+  );
+  $("update-notes").dataset.link = `release:${update.release}`;
+  $("update").hidden = false;
+}
+
+$("update-later").addEventListener("click", () => ($("update").hidden = true));
+$("update-now").addEventListener("click", async () => {
+  if (runtimeDownload) return stopRuntimeDownload();
+  const confirmed = !runningBottles.size || (await ask({
+    title: t("Mettre à jour le runtime ?", "Update the runtime?"),
+    message: t("Les programmes ouverts seront fermés : enregistre ton travail d'abord.", "Open programs will be closed: save your work first."),
+    ok: t("Mettre à jour", "Update"),
+  }));
+  if (!confirmed) return;
+  runRuntimeTask($("update"), "update_runtime", (name) =>
+    t(`Runtime ${name} installé ✓ : tes bouteilles l'utilisent`, `Runtime ${name} installed ✓: your bottles use it`));
+});
 
 $("download-runtime").addEventListener("click", () => (runtimeDownload ? stopRuntimeDownload() : downloadRuntime()));
 $("choose-runtime").addEventListener("click", async () => {
@@ -862,5 +924,6 @@ async function start() {
   const loaded = await refresh().then(() => true, () => false);
   setInterval(pollRunning, 3000);
   if (loaded && !lib.runtime) downloadRuntime();
+  else if (loaded) checkRuntimeUpdate();
 }
 start();

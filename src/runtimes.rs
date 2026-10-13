@@ -5,6 +5,7 @@
 //! patches/wine, embedded into cave at compile time: `cave runtime build`
 //! therefore also works from a cave installed with `cargo install`.
 
+use crate::bottle::Bottle;
 use crate::config::data_dir;
 use crate::runtime::Graphics;
 use crate::tr;
@@ -242,10 +243,13 @@ pub struct PublishedRuntime {
     pub url: String,
     pub size: u64,
     pub sha256: String,
+    /// Tag of the release that carries it (v0.3.0, wine-cx-26.10.0…).
+    pub release: String,
 }
 
 #[derive(serde::Deserialize)]
 struct Release {
+    tag_name: String,
     draft: bool,
     prerelease: bool,
     assets: Vec<Asset>,
@@ -288,8 +292,8 @@ fn latest_runtime(releases: &str) -> Result<Option<PublishedRuntime>> {
         .iter()
         .rev()
         .filter(|r| !r.draft && !r.prerelease)
-        .flat_map(|r| &r.assets)
-        .filter_map(|a| {
+        .flat_map(|r| r.assets.iter().map(move |a| (r, a)))
+        .filter_map(|(r, a)| {
             let name = a.name.strip_prefix("wine-cx-")?.strip_suffix(".tar.xz")?;
             let sha256 = a.digest.as_deref()?.strip_prefix("sha256:")?;
             Some(PublishedRuntime {
@@ -297,6 +301,7 @@ fn latest_runtime(releases: &str) -> Result<Option<PublishedRuntime>> {
                 url: a.browser_download_url.clone(),
                 size: a.size,
                 sha256: sha256.to_string(),
+                release: r.tag_name.clone(),
             })
         })
         .max_by(|a, b| version_key(&a.name).cmp(&version_key(&b.name))))
@@ -321,6 +326,10 @@ pub enum InstallStep {
     Download { received: u64, total: u64 },
     Check,
     Extract,
+    /// Update: the bottles move to the new runtime.
+    Switch,
+    /// Update: the new runtime's bottle template is prepared.
+    Prepare,
 }
 
 /// Downloads the runtime into the cache, checks it and installs it. An
@@ -381,6 +390,73 @@ pub fn install_published(
     let installed = install_archive(&archive);
     let _ = fs::remove_file(&archive);
     installed.map(Some)
+}
+
+/// The latest published runtime, if it is more recent than the installed
+/// ones (without a runtime, it is an installation, not an update).
+pub fn update_available() -> Result<Option<PublishedRuntime>> {
+    let Some(current) = default()? else {
+        return Ok(None);
+    };
+    let latest = latest_published()?;
+    Ok(is_newer(&latest.name, &current.name).then_some(latest))
+}
+
+/// Bottles on one of Cave's runtimes, which an update moves to the new one.
+/// The others (global Wine, a wine binary given by its path) stay as they are.
+pub fn bottles_to_update() -> Result<Vec<Bottle>> {
+    let dir = runtimes_dir()?;
+    Ok(Bottle::list()?
+        .into_iter()
+        .filter(|b| b.config.wine.as_ref().is_some_and(|wine| wine.starts_with(&dir)))
+        .collect())
+}
+
+/// Installs a newer runtime and moves the bottles to it, stopping their open
+/// programs first. The runtime they used stays installed as a fallback
+/// (`cave wine <bottle> <runtime>` goes back to it); older ones that no
+/// bottle uses are deleted, with their templates. None if cancelled.
+pub fn update(
+    rt: &PublishedRuntime,
+    progress: &dyn Fn(InstallStep),
+    cancel: &AtomicBool,
+) -> Result<Option<InstalledRuntime>> {
+    let previous = default()?;
+    let Some(new) = install_published(rt, progress, cancel)? else {
+        return Ok(None);
+    };
+    progress(InstallStep::Switch);
+    for mut bottle in bottles_to_update()? {
+        if bottle.config.wine.as_deref() == Some(new.wine().as_path()) {
+            continue;
+        }
+        // Stopped with the old runtime's wineserver, before changing it.
+        if bottle.is_running() {
+            bottle.kill()?;
+            bottle.wait_stopped()?;
+        }
+        bottle.config.wine = Some(new.wine());
+        bottle.save()?;
+    }
+    // Not fatal: the template is otherwise prepared with the next new bottle.
+    progress(InstallStep::Prepare);
+    let _ = Bottle::prepare_template(&new, &|_| {});
+    prune(&[Some(new.name.as_str()), previous.as_ref().map(|p| p.name.as_str())])?;
+    Ok(Some(new))
+}
+
+/// Deletes the runtimes that are neither kept nor used by a bottle, with
+/// their templates.
+fn prune(keep: &[Option<&str>]) -> Result<()> {
+    let used: Vec<PathBuf> = Bottle::list()?.into_iter().filter_map(|b| b.config.wine).collect();
+    for rt in list()? {
+        if keep.contains(&Some(rt.name.as_str())) || used.iter().any(|wine| wine.starts_with(&rt.root)) {
+            continue;
+        }
+        fs::remove_dir_all(&rt.root)?;
+        let _ = fs::remove_dir_all(Bottle::template_dir(&rt.name)?);
+    }
+    Ok(())
 }
 
 fn sha256(path: &Path) -> Result<String> {
@@ -450,7 +526,7 @@ mod tests {
             )
         };
         let release = |draft: bool, prerelease: bool, assets: &[String]| {
-            format!(r#"{{"draft":{draft},"prerelease":{prerelease},"assets":[{}]}}"#, assets.join(","))
+            format!(r#"{{"tag_name":"v1","draft":{draft},"prerelease":{prerelease},"assets":[{}]}}"#, assets.join(","))
         };
         let releases = format!(
             "[{},{},{},{}]",
@@ -466,6 +542,7 @@ mod tests {
                 url: "https://example.com/wine-cx-26.10.0.tar.xz".into(),
                 size: 272,
                 sha256: "abc".into(),
+                release: "v1".into(),
             })
         );
         let rebuilt = format!(
