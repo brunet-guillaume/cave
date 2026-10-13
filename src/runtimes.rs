@@ -278,12 +278,15 @@ pub fn latest_published() -> Result<PublishedRuntime> {
     })
 }
 
-/// In the list of releases (GitHub API), the runtime with the highest
-/// version, outside drafts and pre-releases.
+/// In the list of releases (GitHub API, newest first), the runtime with the
+/// highest version, outside drafts and pre-releases. Between two releases
+/// with the same runtime version, the newest one: max_by keeps the last of
+/// equal elements, hence the reversed order.
 fn latest_runtime(releases: &str) -> Result<Option<PublishedRuntime>> {
     let releases: Vec<Release> = serde_json::from_str(releases).context("GitHub releases")?;
     Ok(releases
         .iter()
+        .rev()
         .filter(|r| !r.draft && !r.prerelease)
         .flat_map(|r| &r.assets)
         .filter_map(|a| {
@@ -465,6 +468,12 @@ mod tests {
                 sha256: "abc".into(),
             })
         );
+        let rebuilt = format!(
+            "[{},{}]",
+            release(false, false, &[asset("wine-cx-26.3.0.tar.xz", Some("sha256:new"))]),
+            release(false, false, &[asset("wine-cx-26.3.0.tar.xz", Some("sha256:old"))]),
+        );
+        assert_eq!(latest_runtime(&rebuilt).unwrap().unwrap().sha256, "new", "same version: newest release");
         let unchecked = format!("[{}]", release(false, false, &[asset("wine-cx-26.3.0.tar.xz", None)]));
         assert_eq!(latest_runtime(&unchecked).unwrap(), None, "no checksum, no download");
         assert!(latest_runtime("{\"message\":\"API rate limit exceeded\"}").is_err());
