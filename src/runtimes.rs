@@ -15,6 +15,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 /// Embedded scripts and patches, with their relative path in the repository.
 /// A new patch in patches/wine must be added here (a test checks it).
@@ -298,6 +299,19 @@ fn latest_runtime(releases: &str) -> Result<Option<PublishedRuntime>> {
         .max_by(|a, b| version_key(&a.name).cmp(&version_key(&b.name))))
 }
 
+/// The curl downloading a runtime, if any. Killed by stop_download when the
+/// interface quits: a child process outlives its parent, and it would go on
+/// downloading alone.
+static DOWNLOAD: Mutex<Option<u32>> = Mutex::new(None);
+
+/// Stops the runtime download in progress, if any; what was received stays
+/// in the cache for the next download.
+pub fn stop_download() {
+    if let Some(pid) = DOWNLOAD.lock().ok().and_then(|mut pid| pid.take()) {
+        let _ = Command::new("/bin/kill").arg(pid.to_string()).status();
+    }
+}
+
 /// Where a runtime installation from GitHub stands.
 #[derive(Clone, Copy, Debug)]
 pub enum InstallStep {
@@ -329,6 +343,7 @@ pub fn install_published(
             .arg(&rt.url)
             .spawn()
             .context("starting curl")?;
+        *DOWNLOAD.lock().unwrap() = Some(curl.id());
         // curl writes as it receives: the file's size is the progress.
         let status = loop {
             if let Some(status) = curl.try_wait()? {
@@ -337,11 +352,13 @@ pub fn install_published(
             if cancel.load(Ordering::Relaxed) {
                 let _ = curl.kill();
                 let _ = curl.wait();
+                *DOWNLOAD.lock().unwrap() = None;
                 return Ok(None);
             }
             progress(InstallStep::Download { received: size(&part), total: rt.size });
             std::thread::sleep(std::time::Duration::from_millis(250));
         };
+        *DOWNLOAD.lock().unwrap() = None;
         if !status.success() {
             bail!(tr!("téléchargement de {} impossible ({status})", "could not download {} ({status})", rt.url));
         }

@@ -672,6 +672,12 @@ fn main() {
             open_link,
             language
         ])
-        .run(tauri::generate_context!())
-        .expect("could not start the interface");
+        .build(tauri::generate_context!())
+        .expect("could not start the interface")
+        .run(|_, event| {
+            // A runtime download (curl) would otherwise go on after Cave quits.
+            if let tauri::RunEvent::Exit = event {
+                runtimes::stop_download();
+            }
+        });
 }
