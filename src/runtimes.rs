@@ -250,6 +250,8 @@ pub struct PublishedRuntime {
 #[derive(serde::Deserialize)]
 struct Release {
     tag_name: String,
+    /// "2026-10-13T11:03:38Z": comparable as text. None for a draft.
+    published_at: Option<String>,
     draft: bool,
     prerelease: bool,
     assets: Vec<Asset>,
@@ -282,15 +284,14 @@ pub fn latest_published() -> Result<PublishedRuntime> {
     })
 }
 
-/// In the list of releases (GitHub API, newest first), the runtime with the
-/// highest version, outside drafts and pre-releases. Between two releases
-/// with the same runtime version, the newest one: max_by keeps the last of
-/// equal elements, hence the reversed order.
+/// In the list of releases (GitHub API), the runtime with the highest
+/// version, outside drafts and pre-releases. Between two releases with the
+/// same runtime version, the last published one (GitHub's list is not in
+/// publication order).
 fn latest_runtime(releases: &str) -> Result<Option<PublishedRuntime>> {
     let releases: Vec<Release> = serde_json::from_str(releases).context("GitHub releases")?;
     Ok(releases
         .iter()
-        .rev()
         .filter(|r| !r.draft && !r.prerelease)
         .flat_map(|r| r.assets.iter().map(move |a| (r, a)))
         .filter_map(|(r, a)| {
@@ -303,8 +304,10 @@ fn latest_runtime(releases: &str) -> Result<Option<PublishedRuntime>> {
                 sha256: sha256.to_string(),
                 release: r.tag_name.clone(),
             })
+            .map(|rt| ((version_key(&rt.name), r.published_at.clone()), rt))
         })
-        .max_by(|a, b| version_key(&a.name).cmp(&version_key(&b.name))))
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, rt)| rt))
 }
 
 /// The curl downloading a runtime, if any. Killed by stop_download when the
@@ -525,15 +528,19 @@ mod tests {
                 digest.map_or("null".to_string(), |d| format!("\"{d}\""))
             )
         };
-        let release = |draft: bool, prerelease: bool, assets: &[String]| {
-            format!(r#"{{"tag_name":"v1","draft":{draft},"prerelease":{prerelease},"assets":[{}]}}"#, assets.join(","))
+        let release = |draft: bool, prerelease: bool, published: &str, assets: &[String]| {
+            format!(
+                r#"{{"tag_name":"v1","published_at":"{published}","draft":{draft},"prerelease":{prerelease},"assets":[{}]}}"#,
+                assets.join(",")
+            )
         };
+        let day = |d: u32| format!("2026-10-{d:02}T10:00:00Z");
         let releases = format!(
             "[{},{},{},{}]",
-            release(false, true, &[asset("wine-cx-27.0.0.tar.xz", Some("sha256:beta"))]),
-            release(false, false, &[asset("Cave.zip", Some("sha256:app")), asset("wine-cx-26.10.0.tar.xz", Some("sha256:abc"))]),
-            release(false, false, &[asset("wine-cx-26.3.0.tar.xz", Some("sha256:old"))]),
-            release(true, false, &[asset("wine-cx-28.0.0.tar.xz", Some("sha256:draft"))]),
+            release(false, true, &day(4), &[asset("wine-cx-27.0.0.tar.xz", Some("sha256:beta"))]),
+            release(false, false, &day(3), &[asset("Cave.zip", Some("sha256:app")), asset("wine-cx-26.10.0.tar.xz", Some("sha256:abc"))]),
+            release(false, false, &day(2), &[asset("wine-cx-26.3.0.tar.xz", Some("sha256:old"))]),
+            release(true, false, &day(5), &[asset("wine-cx-28.0.0.tar.xz", Some("sha256:draft"))]),
         );
         assert_eq!(
             latest_runtime(&releases).unwrap(),
@@ -545,13 +552,17 @@ mod tests {
                 release: "v1".into(),
             })
         );
-        let rebuilt = format!(
-            "[{},{}]",
-            release(false, false, &[asset("wine-cx-26.3.0.tar.xz", Some("sha256:new"))]),
-            release(false, false, &[asset("wine-cx-26.3.0.tar.xz", Some("sha256:old"))]),
-        );
-        assert_eq!(latest_runtime(&rebuilt).unwrap().unwrap().sha256, "new", "same version: newest release");
-        let unchecked = format!("[{}]", release(false, false, &[asset("wine-cx-26.3.0.tar.xz", None)]));
+        // Same version in two releases: the last published, whatever the order.
+        for (first, second) in [(day(1), day(2)), (day(2), day(1))] {
+            let new = if first > second { "first" } else { "second" };
+            let rebuilt = format!(
+                "[{},{}]",
+                release(false, false, &first, &[asset("wine-cx-26.3.0.tar.xz", Some("sha256:first"))]),
+                release(false, false, &second, &[asset("wine-cx-26.3.0.tar.xz", Some("sha256:second"))]),
+            );
+            assert_eq!(latest_runtime(&rebuilt).unwrap().unwrap().sha256, new);
+        }
+        let unchecked = format!("[{}]", release(false, false, &day(1), &[asset("wine-cx-26.3.0.tar.xz", None)]));
         assert_eq!(latest_runtime(&unchecked).unwrap(), None, "no checksum, no download");
         assert!(latest_runtime("{\"message\":\"API rate limit exceeded\"}").is_err());
     }
